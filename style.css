@@ -161,7 +161,14 @@ textarea {
     position: fixed;
     inset: 0;
     z-index: 0;
-    pointer-events: none
+    pointer-events: none;
+    overflow: hidden
+}
+
+#particles canvas {
+    width: 100% !important;
+    height: 100% !important;
+    display: block
 }
 
 /* --- Scrollbar -------------------------------------------- */
@@ -1701,7 +1708,7 @@ nav.scrolled {
     }
 }
 /* ============================================================
-   LIGHT MODE — ELEMENT-SPECIFIC OVERRIDES
+   LIGHT MODE ï¿½ ELEMENT-SPECIFIC OVERRIDES
    ============================================================ */
 
 /* Hero */
@@ -1963,7 +1970,7 @@ nav.scrolled {
 /* Scrollbar */
 [data-theme="light"] ::-webkit-scrollbar-track { background: #f0f4ff; }
 
-/* Dark mode — extra vibrancy tweaks */
+/* Dark mode ï¿½ extra vibrancy tweaks */
 [data-theme="dark"] .tl-card:hover {
     box-shadow: 0 8px 30px rgba(0,238,255,0.08);
 }
@@ -1981,7 +1988,7 @@ nav.scrolled {
 }
 
 /* ============================================================
-   ENHANCEMENTS v2 — Loader, Progress, Dots, BTT, Highlights
+   ENHANCEMENTS v2 ï¿½ Loader, Progress, Dots, BTT, Highlights
    ============================================================ */
 
 /* --- Loading Screen --------------------------------------- */

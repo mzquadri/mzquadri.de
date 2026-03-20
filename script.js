@@ -148,89 +148,259 @@ if (copyBtn) copyBtn.addEventListener('click', () => {
     setTimeout(() => { txt.textContent = 'Copy'; copyBtn.classList.remove('copied'); }, 2000);
 });
 
-//  ENHANCED PARTICLES WITH WEB CONNECTIONS 
+//  THREE.JS 3D PARTICLE NETWORK 
 (function() {
-    const canvas = document.getElementById('particles');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    let W, H, particles = [], mouse = { x: -1000, y: -1000 };
-    const MAX_PARTICLES = 80;
-    const CONNECTION_DIST = 150;
+    const container = document.getElementById('particles');
+    if (!container || typeof THREE === 'undefined') return;
 
-    function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
-    resize();
-    window.addEventListener('resize', resize);
-    document.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 30;
+
+    const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x000000, 0);
+    container.appendChild(renderer.domElement);
+
+    // Mouse tracking (normalized -1 to 1)
+    const mouse = { x: 0, y: 0, target: { x: 0, y: 0 } };
+    document.addEventListener('mousemove', e => {
+        mouse.target.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouse.target.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    });
 
     function isDark() { return document.documentElement.getAttribute('data-theme') !== 'light'; }
 
-    class Particle {
-        constructor() { this.reset(); }
-        reset() {
-            this.x = Math.random() * W;
-            this.y = Math.random() * H;
-            this.vx = (Math.random() - 0.5) * 0.5;
-            this.vy = (Math.random() - 0.5) * 0.5;
-            this.r = Math.random() * 2 + 0.5;
-            this.alpha = Math.random() * 0.5 + 0.2;
-        }
-        update() {
-            this.x += this.vx; this.y += this.vy;
-            if (this.x < 0 || this.x > W) this.vx *= -1;
-            if (this.y < 0 || this.y > H) this.vy *= -1;
-            // Slight mouse attraction
-            const dx = mouse.x - this.x, dy = mouse.y - this.y;
-            const dist = Math.sqrt(dx*dx + dy*dy);
-            if (dist < 200) { this.vx += dx * 0.00005; this.vy += dy * 0.00005; }
-        }
-        draw() {
-            const c = isDark() ? '0,238,255' : '0,112,210';
-            ctx.beginPath();
-            ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(' + c + ',' + this.alpha + ')';
-            ctx.fill();
-        }
+    // --- Particle system ---
+    const PARTICLE_COUNT = 120;
+    const SPREAD = 40;
+    const CONNECTION_DIST = 8;
+
+    const positions = [];
+    const velocities = [];
+    const sizes = [];
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        positions.push(
+            (Math.random() - 0.5) * SPREAD,
+            (Math.random() - 0.5) * SPREAD,
+            (Math.random() - 0.5) * SPREAD * 0.6
+        );
+        velocities.push(
+            (Math.random() - 0.5) * 0.01,
+            (Math.random() - 0.5) * 0.01,
+            (Math.random() - 0.5) * 0.005
+        );
+        sizes.push(Math.random() * 3 + 1.5);
     }
 
-    for (let i = 0; i < MAX_PARTICLES; i++) particles.push(new Particle());
+    // Point cloud geometry
+    const particleGeo = new THREE.BufferGeometry();
+    const posAttr = new THREE.Float32BufferAttribute(positions, 3);
+    particleGeo.setAttribute('position', posAttr);
+    particleGeo.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
 
-    function drawConnections() {
-        const c = isDark() ? '0,238,255' : '0,112,210';
-        for (let i = 0; i < particles.length; i++) {
-            for (let j = i + 1; j < particles.length; j++) {
-                const dx = particles[i].x - particles[j].x;
-                const dy = particles[i].y - particles[j].y;
-                const dist = Math.sqrt(dx*dx + dy*dy);
+    // Custom shader for glowing dots
+    const particleMat = new THREE.ShaderMaterial({
+        uniforms: {
+            uColor: { value: new THREE.Color(0x00eeff) },
+            uTime: { value: 0 }
+        },
+        vertexShader: `
+            attribute float size;
+            uniform float uTime;
+            varying float vAlpha;
+            void main() {
+                vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+                gl_PointSize = size * (8.0 / -mvPos.z);
+                gl_Position = projectionMatrix * mvPos;
+                vAlpha = 0.4 + 0.3 * sin(uTime * 1.5 + position.x * 0.5 + position.y * 0.3);
+            }
+        `,
+        fragmentShader: `
+            uniform vec3 uColor;
+            varying float vAlpha;
+            void main() {
+                float d = distance(gl_PointCoord, vec2(0.5));
+                if (d > 0.5) discard;
+                float glow = 1.0 - smoothstep(0.0, 0.5, d);
+                gl_FragColor = vec4(uColor, glow * vAlpha);
+            }
+        `,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+    });
+
+    const particleSystem = new THREE.Points(particleGeo, particleMat);
+    scene.add(particleSystem);
+
+    // --- Connection lines (dynamic) ---
+    const MAX_CONNECTIONS = 400;
+    const linePositions = new Float32Array(MAX_CONNECTIONS * 6); // 2 vertices * 3 components per connection
+    const lineColors = new Float32Array(MAX_CONNECTIONS * 6);    // RGBA per vertex (using RGB)
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+    lineGeo.setAttribute('color', new THREE.BufferAttribute(lineColors, 3));
+    lineGeo.setDrawRange(0, 0);
+
+    const lineMat = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.35,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+    const linesMesh = new THREE.LineSegments(lineGeo, lineMat);
+    scene.add(linesMesh);
+
+    // --- Floating wireframe geometry (decorative) ---
+    const icoGeo = new THREE.IcosahedronGeometry(3.5, 1);
+    const icoMat = new THREE.MeshBasicMaterial({
+        color: 0xb266ff,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.08,
+        blending: THREE.AdditiveBlending
+    });
+    const ico = new THREE.Mesh(icoGeo, icoMat);
+    ico.position.set(10, 5, -8);
+    scene.add(ico);
+
+    const torusGeo = new THREE.TorusGeometry(2.5, 0.3, 8, 32);
+    const torusMat = new THREE.MeshBasicMaterial({
+        color: 0x00eeff,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.06,
+        blending: THREE.AdditiveBlending
+    });
+    const torus = new THREE.Mesh(torusGeo, torusMat);
+    torus.position.set(-12, -6, -5);
+    scene.add(torus);
+
+    const octaGeo = new THREE.OctahedronGeometry(2, 0);
+    const octaMat = new THREE.MeshBasicMaterial({
+        color: 0x00eeff,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.07,
+        blending: THREE.AdditiveBlending
+    });
+    const octa = new THREE.Mesh(octaGeo, octaMat);
+    octa.position.set(-8, 8, -10);
+    scene.add(octa);
+
+    // --- Resize handler ---
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // --- Animation loop ---
+    let time = 0;
+    const cyanColor = new THREE.Color(0x00eeff);
+    const purpleColor = new THREE.Color(0xb266ff);
+
+    function animate() {
+        requestAnimationFrame(animate);
+        time += 0.016;
+
+        // Smooth mouse follow
+        mouse.x += (mouse.target.x - mouse.x) * 0.05;
+        mouse.y += (mouse.target.y - mouse.y) * 0.05;
+
+        // Camera subtle movement following mouse
+        camera.position.x += (mouse.x * 3 - camera.position.x) * 0.02;
+        camera.position.y += (mouse.y * 2 - camera.position.y) * 0.02;
+        camera.lookAt(0, 0, 0);
+
+        // Update particle positions
+        const pos = posAttr.array;
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            const i3 = i * 3;
+            pos[i3]     += velocities[i3];
+            pos[i3 + 1] += velocities[i3 + 1];
+            pos[i3 + 2] += velocities[i3 + 2];
+
+            // Boundaries (soft bounce)
+            const half = SPREAD / 2;
+            if (Math.abs(pos[i3])     > half) velocities[i3]     *= -1;
+            if (Math.abs(pos[i3 + 1]) > half) velocities[i3 + 1] *= -1;
+            if (Math.abs(pos[i3 + 2]) > half * 0.6) velocities[i3 + 2] *= -1;
+
+            // Subtle wave motion
+            pos[i3 + 1] += Math.sin(time * 0.8 + pos[i3] * 0.1) * 0.003;
+        }
+        posAttr.needsUpdate = true;
+
+        // Update connections
+        let connIdx = 0;
+        for (let i = 0; i < PARTICLE_COUNT && connIdx < MAX_CONNECTIONS; i++) {
+            for (let j = i + 1; j < PARTICLE_COUNT && connIdx < MAX_CONNECTIONS; j++) {
+                const i3 = i * 3, j3 = j * 3;
+                const dx = pos[i3] - pos[j3];
+                const dy = pos[i3+1] - pos[j3+1];
+                const dz = pos[i3+2] - pos[j3+2];
+                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
                 if (dist < CONNECTION_DIST) {
-                    ctx.beginPath();
-                    ctx.moveTo(particles[i].x, particles[i].y);
-                    ctx.lineTo(particles[j].x, particles[j].y);
-                    ctx.strokeStyle = 'rgba(' + c + ',' + (0.12 * (1 - dist/CONNECTION_DIST)) + ')';
-                    ctx.lineWidth = 0.5;
-                    ctx.stroke();
+                    const ci = connIdx * 6;
+                    linePositions[ci]   = pos[i3];
+                    linePositions[ci+1] = pos[i3+1];
+                    linePositions[ci+2] = pos[i3+2];
+                    linePositions[ci+3] = pos[j3];
+                    linePositions[ci+4] = pos[j3+1];
+                    linePositions[ci+5] = pos[j3+2];
+
+                    const alpha = 1 - dist / CONNECTION_DIST;
+                    // Gradient from cyan to purple based on position
+                    const mix = (pos[i3] + SPREAD/2) / SPREAD;
+                    const col = cyanColor.clone().lerp(purpleColor, mix);
+                    lineColors[ci]   = col.r * alpha;
+                    lineColors[ci+1] = col.g * alpha;
+                    lineColors[ci+2] = col.b * alpha;
+                    lineColors[ci+3] = col.r * alpha;
+                    lineColors[ci+4] = col.g * alpha;
+                    lineColors[ci+5] = col.b * alpha;
+                    connIdx++;
                 }
             }
-            // Mouse connections
-            const mdx = mouse.x - particles[i].x, mdy = mouse.y - particles[i].y;
-            const mdist = Math.sqrt(mdx*mdx + mdy*mdy);
-            if (mdist < CONNECTION_DIST * 1.5) {
-                ctx.beginPath();
-                ctx.moveTo(particles[i].x, particles[i].y);
-                ctx.lineTo(mouse.x, mouse.y);
-                ctx.strokeStyle = 'rgba(' + c + ',' + (0.2 * (1 - mdist/(CONNECTION_DIST*1.5))) + ')';
-                ctx.lineWidth = 0.8;
-                ctx.stroke();
-            }
         }
-    }
+        lineGeo.setDrawRange(0, connIdx * 2);
+        lineGeo.attributes.position.needsUpdate = true;
+        lineGeo.attributes.color.needsUpdate = true;
 
-    function loop() {
-        ctx.clearRect(0, 0, W, H);
-        particles.forEach(p => { p.update(); p.draw(); });
-        drawConnections();
-        requestAnimationFrame(loop);
+        // Rotate decorative shapes
+        ico.rotation.x += 0.003;
+        ico.rotation.y += 0.005;
+        torus.rotation.x += 0.004;
+        torus.rotation.z += 0.006;
+        octa.rotation.y += 0.007;
+        octa.rotation.z += 0.003;
+
+        // Update uniforms
+        particleMat.uniforms.uTime.value = time;
+
+        // Theme-aware colors
+        if (isDark()) {
+            particleMat.uniforms.uColor.value.set(0x00eeff);
+            icoMat.color.set(0xb266ff);
+            torusMat.color.set(0x00eeff);
+            octaMat.color.set(0x00eeff);
+            lineMat.opacity = 0.35;
+        } else {
+            particleMat.uniforms.uColor.value.set(0x0070d2);
+            icoMat.color.set(0x6d28d9);
+            torusMat.color.set(0x0070d2);
+            octaMat.color.set(0x0070d2);
+            lineMat.opacity = 0.25;
+        }
+
+        renderer.render(scene, camera);
     }
-    loop();
+    animate();
 })();
 
 //  CHART.JS VISUALIZATIONS 
@@ -549,7 +719,7 @@ const skillBarObs = new IntersectionObserver((entries) => {
 }, { threshold: 0.3 });
 document.querySelectorAll('.skill-progress').forEach(el => skillBarObs.observe(el));
 
-console.log(' Portfolio v3 — Futuristic Mode Active');
+console.log(' Portfolio v4 — Three.js 3D Mode Active');
 
 //  SHAP FEATURE IMPORTANCE (SIMULATED BAR CHART) 
 (function() {
